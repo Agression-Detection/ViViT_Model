@@ -90,6 +90,7 @@ def train(
 
         for batch_idx, (videos, labels) in enumerate(train_loader):
             videos, labels = videos.to(device), labels.to(device)
+            print(len(videos))
             optimizer.zero_grad()
             batch_video_logits = []
 
@@ -141,7 +142,7 @@ def get_dataloader(datapath: str, is_dist: bool, num_workers = 2, augment = Fals
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--epochs', type=int, default=10)
-    parser.add_argument('--batch_size', type=int, default=1)
+    parser.add_argument('--batch_size', type=int, default=4)
     parser.add_argument('--checkpoint_dir', type=str, default='./checkpoint')
     parser.add_argument('--model-dir', type=str, default='./model')
     parser.add_argument('--data_dir', type=str, default='./data')
