@@ -5,7 +5,7 @@ import zipfile
 import tarfile
 from torch.utils.data import DataLoader, DistributedSampler
 
-from src.dataset import ViolentVideoDataset
+from dataset import ViolentVideoDataset
 
 
 def download_data(bucket: str, key: str, local_path: str):
@@ -13,7 +13,7 @@ def download_data(bucket: str, key: str, local_path: str):
     # response = s3.download_file(Bucket=bucket, Key=key, Filename=local_path)
     # print("Downloaded data!")
     with zipfile.ZipFile(local_path, 'r') as zip_ref:
-        zip_ref.extractall("../data")
+        zip_ref.extractall("./data")
     print("Data extracted")
 
 def train(epochs: int):
@@ -39,9 +39,9 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--epochs', type=int, default=10)
     parser.add_argument('--batch_size', type=int, default=32)
-    parser.add_argument('--checkpoint_dir', type=str, default='../checkpoint')
-    parser.add_argument('--model-dir', type=str, default='../model')
-    parser.add_argument('--data_dir', type=str, default='../data')
+    parser.add_argument('--checkpoint_dir', type=str, default='./checkpoint')
+    parser.add_argument('--model-dir', type=str, default='./model')
+    parser.add_argument('--data_dir', type=str, default='./data')
     return parser.parse_args()
 
 
