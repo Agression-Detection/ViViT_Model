@@ -3,15 +3,16 @@ import os
 import boto3
 import zipfile
 import tarfile
+import torch
 from torch.utils.data import DataLoader, DistributedSampler
 
 from dataset import ViolentVideoDataset
 
 
 def download_data(bucket: str, key: str, local_path: str):
-    # s3 = boto3.client('s3')
-    # response = s3.download_file(Bucket=bucket, Key=key, Filename=local_path)
-    # print("Downloaded data!")
+    s3 = boto3.client('s3')
+    response = s3.download_file(Bucket=bucket, Key=key, Filename=local_path)
+    print("Downloaded data!")
     with zipfile.ZipFile(local_path, 'r') as zip_ref:
         zip_ref.extractall("./data")
     print("Data extracted")
