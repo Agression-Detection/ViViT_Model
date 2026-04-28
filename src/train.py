@@ -12,6 +12,8 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, DistributedSampler
 from dataset import ViolentVideoDataset
 
+# TODO: frame size = 244* 244
+
 # init DDP
 def init_ddp():
     if "RANK" in os.environ:
@@ -47,8 +49,36 @@ def download_data(bucket: str, key: str, local_path: str):
         zip_ref.extractall("./data")
     print("Data extracted")
 
-def train(epochs: int, model, train_loader, train_sampler, optimizer, criterion, device, is_dist):
-    print("Training Began...")
+
+def sliding_windows(video, window_size=6, stride=3) -> torch.Tensor:
+    T = video.shape[0]
+    windows = []
+
+    for start in range(0, T-window_size+1, stride):
+        windows.append(video[start:start+window_size])
+
+    if len(windows) == 0:
+        if T < window_size:
+            pad = video[-1:].repeat(window_size - T, 1, 1, 1)
+            video = torch.cat((video, pad), 0)
+        windows.append(video)
+
+    return torch.stack(windows)
+
+
+def train(
+        epochs: int,
+        model,
+        train_loader,
+        train_sampler,
+        optimizer,
+        criterion,
+        device,
+        is_dist,
+        window_size=6,
+        stride=3
+):
+    print("Training Vivit Model..")
 
     for epoch in range(epochs):
         if is_dist and train_sampler is not None:
@@ -59,20 +89,23 @@ def train(epochs: int, model, train_loader, train_sampler, optimizer, criterion,
 
         for batch_idx, (videos, labels) in enumerate(train_loader):
             videos, labels = videos.to(device), labels.to(device)
-
+            running_loss = 0.0
             optimizer.zero_grad()
-            outputs = model(videos).logits
-            loss = criterion(outputs, labels)
+            batch_video_logits = []
 
+            for video in videos:
+                windows = sliding_windows(video, window_size=window_size, stride=stride).to(device).to(device)
+                outputs = model(windows).logits
+                video_logits = torch.logsumexp(outputs, dim=-0)
+                batch_video_logits.append(video_logits)
+
+            batch_video_logits = torch.stack(batch_video_logits)
+            loss  = criterion(batch_video_logits, labels)
             loss.backward()
             optimizer.step()
-
             running_loss += loss.item()
 
-            if batch_idx % 10 == 0:
-                print(f"Epoch [{epoch+1}/{epochs}] | Batch {batch_idx} | Loss: {loss.item():.4f}")
-        print(f"--- Epoch {epoch+1} Complete. Avg Loss: {running_loss/len(train_loader):.4f} ---")
-
+        print(f"--- Epoch {epoch+1}/{epochs} Complete. Avg Loss: {running_loss/len(train_loader):.4f} ---")
 
 def validate():
     pass
