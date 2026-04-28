@@ -35,6 +35,7 @@ def get_model(device, is_dist, local_rank):
     model = VivitForVideoClassification.from_pretrained(
         "google/vivit-b-16x2-kinetics400", 
         num_labels=2, 
+        num_frames=10,
         ignore_mismatched_sizes=True
     )
     model = model.to(device)
@@ -50,7 +51,7 @@ def download_data(bucket: str, key: str, local_path: str):
     print("Data extracted")
 
 
-def sliding_windows(video, window_size=6, stride=3) -> torch.Tensor:
+def sliding_windows(video, window_size=10, stride=5) -> torch.Tensor:
     T = video.shape[0]
     windows = []
 
@@ -62,7 +63,7 @@ def sliding_windows(video, window_size=6, stride=3) -> torch.Tensor:
             pad = video[-1:].repeat(window_size - T, 1, 1, 1)
             video = torch.cat((video, pad), 0)
         windows.append(video)
-
+    print(len(windows))
     return torch.stack(windows)
 
 
@@ -75,8 +76,8 @@ def train(
         criterion,
         device,
         is_dist,
-        window_size=6,
-        stride=3
+        window_size=10,
+        stride=5
 ):
     print("Training Vivit Model..")
 
@@ -89,12 +90,15 @@ def train(
 
         for batch_idx, (videos, labels) in enumerate(train_loader):
             videos, labels = videos.to(device), labels.to(device)
-            running_loss = 0.0
             optimizer.zero_grad()
             batch_video_logits = []
 
             for video in videos:
-                windows = sliding_windows(video, window_size=window_size, stride=stride).to(device).to(device)
+                
+                if video.shape[0] == 3:
+                    video = video.permute(1, 0, 2, 3)
+
+                windows = sliding_windows(video, window_size=window_size, stride=stride).to(device)
                 outputs = model(windows).logits
                 video_logits = torch.logsumexp(outputs, dim=-0)
                 batch_video_logits.append(video_logits)
@@ -123,7 +127,7 @@ def get_dataloader(datapath: str, is_dist: bool, num_workers = 2, augment = Fals
     if is_dist:
         distributed_sampler = DistributedSampler(dataset, shuffle=True)
         shuffle_data = False
-
+    num_workers = 2 if is_dist else 0
     # TODO: Data must be pulled at random from dataset
     dataloader =  DataLoader(
         dataset,
@@ -137,7 +141,7 @@ def get_dataloader(datapath: str, is_dist: bool, num_workers = 2, augment = Fals
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--epochs', type=int, default=10)
-    parser.add_argument('--batch_size', type=int, default=32)
+    parser.add_argument('--batch_size', type=int, default=1)
     parser.add_argument('--checkpoint_dir', type=str, default='./checkpoint')
     parser.add_argument('--model-dir', type=str, default='./model')
     parser.add_argument('--data_dir', type=str, default='./data')
