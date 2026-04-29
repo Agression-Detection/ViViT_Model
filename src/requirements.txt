@@ -1,0 +1,4 @@
+huggingface_hub==1.11.0
+tqdm==4.67.3
+transformers
+boto3

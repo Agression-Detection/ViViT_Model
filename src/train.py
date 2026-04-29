@@ -92,7 +92,7 @@ def train(
             videos, labels = videos.to(device), labels.to(device)
             optimizer.zero_grad()
             batch_video_logits = []
-
+            print(len(videos))
             for video in videos:
                 
                 if video.shape[0] == 3:
@@ -141,10 +141,10 @@ def get_dataloader(datapath: str, is_dist: bool, num_workers = 2, augment = Fals
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--epochs', type=int, default=10)
-    parser.add_argument('--batch_size', type=int, default=1)
-    parser.add_argument('--checkpoint_dir', type=str, default='./checkpoint')
+    parser.add_argument('--batch-size', type=int, default=1)
+    parser.add_argument('--checkpoint-dir', type=str, default='./checkpoint')
     parser.add_argument('--model-dir', type=str, default='./model')
-    parser.add_argument('--data_dir', type=str, default='./data')
+    parser.add_argument('--data-dir', type=str, default='./data')
     return parser.parse_args()
 
 
@@ -165,7 +165,7 @@ if __name__ == '__main__':
 
     bucket = 'agression-model'
     file_name = 'data/videos'
-    #download_data(bucket, file_name, f"{args.data_dir}/videos")
+    download_data(bucket, file_name, f"{args.data_dir}/videos")
 
     train_loader, train_sampler = get_dataloader(train_data_path, is_dist, batch_size=args.batch_size)
     # valid_loader = get_dataloader(args.data_dir)
