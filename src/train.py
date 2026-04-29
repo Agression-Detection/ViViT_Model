@@ -90,6 +90,7 @@ def train(
 
         for batch_idx, (videos, labels) in enumerate(train_loader):
             videos, labels = videos.to(device), labels.to(device)
+            print(len(videos))
             optimizer.zero_grad()
             batch_video_logits = []
             print(len(videos))
