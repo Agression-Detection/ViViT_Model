@@ -36,8 +36,11 @@ def get_model(device, is_dist, local_rank):
         "google/vivit-b-16x2-kinetics400", 
         num_labels=2, 
         num_frames=10,
-        ignore_mismatched_sizes=True
+        ignore_mismatched_sizes=True,
+        use_safetensors=True,
     )
+    model.config.id2label = {0: "non_violent", 1: "violent"}
+    model.config.label2id = {"non_violent": 0, "violent": 1}
     model = model.to(device)
     if is_dist: model = DDP(model, device_ids=[local_rank])
     return model
@@ -166,6 +169,9 @@ if __name__ == '__main__':
 
     bucket = 'agression-model'
     file_name = 'data/videos'
+    print("DATA ROOT:", args.data_dir)
+    print(os.listdir(args.data_dir))
+    print(os.listdir("/opt/ml/input/data"))
     download_data(bucket, file_name, f"{args.data_dir}/videos")
 
     train_loader, train_sampler = get_dataloader(train_data_path, is_dist, batch_size=args.batch_size)

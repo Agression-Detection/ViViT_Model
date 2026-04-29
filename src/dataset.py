@@ -1,5 +1,3 @@
-from uuid import SafeUUID
-
 import torch
 from torch.utils.data import Dataset
 import os
@@ -30,7 +28,7 @@ class ViolentVideoDataset(Dataset):
         tensor_path = self.tensor_paths[idx]
         label = self.labels[idx]
 
-        video = torch.load(tensor_path).float() / 255.0
+        video = torch.load(tensor_path, weights_only=True).float() / 255.0
         label = torch.tensor(label, dtype=torch.long)
 
         return video, label
