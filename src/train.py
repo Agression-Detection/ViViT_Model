@@ -11,6 +11,7 @@ from transformers import VivitForVideoClassification
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, DistributedSampler
 from dataset import ViolentVideoDataset
+from torch.amp import GradScaler, autocast
 
 # TODO: frame size = 244* 244
 
@@ -45,12 +46,12 @@ def get_model(device, is_dist, local_rank):
     if is_dist: model = DDP(model, device_ids=[local_rank])
     return model
 
-def download_data(bucket: str, key: str, local_path: str):
+def download_data(bucket: str, key: str, local_path: str, data_dir: str):
     s3 = boto3.client('s3')
     response = s3.download_file(Bucket=bucket, Key=key, Filename=local_path)
     print("Downloaded data!")
     with zipfile.ZipFile(local_path, 'r') as zip_ref:
-        zip_ref.extractall("./data")
+        zip_ref.extractall(data_dir)
     print("Data extracted")
 
 
@@ -83,6 +84,9 @@ def train(
         stride=5
 ):
     print("Training Vivit Model..")
+    base_model = model.module if is_dist else model
+    base_model.gradient_checkpointing_enable()
+    scaler = GradScaler()
 
     for epoch in range(epochs):
         if is_dist and train_sampler is not None:
@@ -93,24 +97,27 @@ def train(
 
         for batch_idx, (videos, labels) in enumerate(train_loader):
             videos, labels = videos.to(device), labels.to(device)
-            print(len(videos))
             optimizer.zero_grad()
             batch_video_logits = []
-            print(len(videos))
             for video in videos:
-                
                 if video.shape[0] == 3:
                     video = video.permute(1, 0, 2, 3)
-
                 windows = sliding_windows(video, window_size=window_size, stride=stride).to(device)
-                outputs = model(windows).logits
-                video_logits = torch.logsumexp(outputs, dim=-0)
-                batch_video_logits.append(video_logits)
 
+                with autocast(device_type="cuda"):
+                    outputs = model(windows).logits
+                    video_logits = torch.logsumexp(outputs, dim=-0)
+
+                batch_video_logits.append(video_logits)
             batch_video_logits = torch.stack(batch_video_logits)
-            loss  = criterion(batch_video_logits, labels)
-            loss.backward()
-            optimizer.step()
+
+            with autocast(device_type="cuda"):
+                loss  = criterion(batch_video_logits, labels)
+
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+
             running_loss += loss.item()
 
         print(f"--- Epoch {epoch+1}/{epochs} Complete. Avg Loss: {running_loss/len(train_loader):.4f} ---")
@@ -160,6 +167,7 @@ if __name__ == '__main__':
     os.makedirs(args.data_dir, exist_ok=True)
     os.makedirs(args.checkpoint_dir, exist_ok=True)
     device = get_device(local_rank, is_dist)
+    print("DATA DIR:", args.data_dir)
 
     model = get_model(device, is_dist, local_rank)
 
@@ -172,7 +180,7 @@ if __name__ == '__main__':
     print("DATA ROOT:", args.data_dir)
     print(os.listdir(args.data_dir))
     print(os.listdir("/opt/ml/input/data"))
-    download_data(bucket, file_name, f"{args.data_dir}/videos")
+    download_data(bucket, file_name, f"{args.data_dir}/videos", args.data_dir)
 
     train_loader, train_sampler = get_dataloader(train_data_path, is_dist, batch_size=args.batch_size)
     # valid_loader = get_dataloader(args.data_dir)

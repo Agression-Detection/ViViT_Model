@@ -1,5 +1,6 @@
 import sagemaker
 from sagemaker.pytorch import PyTorch
+from sagemaker.inputs import TrainingInput
 
 role = "arn:aws:iam::899212678931:role/service-role/AmazonSageMaker-ExecutionRole-20260405T024066"
 checkpoint_s3_uri = 's3://agression-model/vivit/checkpoints/'
@@ -21,15 +22,14 @@ estimator = PyTorch(
     },
     hyperparameters={
         'epochs': 10,
-        'batch-size': 4,
+        'batch-size': 2,
         'checkpoint-dir': local_checkpoint_dir,
         'model-dir': '/opt/ml/model',
-        'data-dir': '/opt/ml/data'
+        'data-dir': '/opt/ml/input'
     },
     output_path='s3://agression-model/',
     checkpoint_s3_uri=checkpoint_s3_uri,
     checkpoint_local_path=local_checkpoint_dir,
 )
-estimator.fit({
-    'training': 's3://agression-model/'
-})
+
+estimator.fit()
