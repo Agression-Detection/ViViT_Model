@@ -13,7 +13,7 @@ estimator = PyTorch(
     #use_spot_instances=True,
     instance_type='ml.g4dn.xlarge',
     instance_count=1,
-    framework_version='2.5.1',
+    framework_version ='2.5.1',
     py_version='py311',
     distribution={
         'torch_distributed': {
@@ -21,8 +21,8 @@ estimator = PyTorch(
         }
     },
     hyperparameters={
-        'epochs': 10,
-        'batch-size': 2,
+        'epochs': 20,
+        'batch-size': 4,
         'checkpoint-dir': local_checkpoint_dir,
         'model-dir': '/opt/ml/model',
         'data-dir': '/opt/ml/input'

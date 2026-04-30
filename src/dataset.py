@@ -18,9 +18,6 @@ class ViolentVideoDataset(Dataset):
                 with open(label_path, 'r') as f:
                     self.labels.append(int(f.read().strip()))
 
-        print(self.tensor_paths[:5])
-        print(self.labels[:5])
-
     def __len__(self):
         return len(self.tensor_paths)
 

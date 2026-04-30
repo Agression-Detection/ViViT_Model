@@ -88,6 +88,7 @@ def train(
     base_model = model.module if is_dist else model
     base_model.gradient_checkpointing_enable()
     scaler = GradScaler()
+    best_val_loss = float('inf')
 
     for epoch in range(epochs):
         if is_dist and train_sampler is not None:
@@ -107,7 +108,7 @@ def train(
 
                 with autocast(device_type="cuda"):
                     outputs = model(windows).logits
-                    video_logits = torch.max(outputs, dim=-0)
+                    video_logits = torch.logsumexp(outputs, dim=0)
 
                 batch_video_logits.append(video_logits)
             batch_video_logits = torch.stack(batch_video_logits)
@@ -155,7 +156,7 @@ def validate(model, val_loader, criterion, device, is_dist, window_size=10, stri
 
                 with autocast(device_type="cuda"):
                     outputs = model(windows).logits
-                    video_logits = torch.max(outputs, dim=0)
+                    video_logits = torch.logsumexp(outputs, dim=0)
 
                 batch_video_logits.append(video_logits)
                 torch.cuda.empty_cache()
@@ -227,10 +228,10 @@ if __name__ == '__main__':
     download_data(bucket, file_name, f"{args.data_dir}/videos", args.data_dir)
 
     train_loader, train_sampler = get_dataloader(train_data_path, is_dist, batch_size=args.batch_size)
-    valid_loader = get_dataloader(valid_data_path, is_dist, batch_size=args.batch_size)
+    valid_loader, _ = get_dataloader(valid_data_path, is_dist, batch_size=args.batch_size)
     # test_loader = get_dataloader(args.data_dir)
 
-    optimizer = optim.AdamW(model.parameters(), lr=1e-4)
-    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
+    optimizer = optim.AdamW(model.parameters(), lr=3e-4)
+    criterion = nn.CrossEntropyLoss()
 
     train(args.epochs, model, train_loader, valid_loader, train_sampler, optimizer, criterion, device, is_dist, checkpoint_dir=args.checkpoint_dir)
