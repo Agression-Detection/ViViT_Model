@@ -12,6 +12,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, DistributedSampler
 from dataset import ViolentVideoDataset
 from torch.amp import GradScaler, autocast
+from sklearn.metrics import confusion_matrix, classification_report, accuracy_score
 
 # TODO: frame size = 244* 244
 
@@ -24,13 +25,10 @@ def init_ddp():
         return True, local_rank
     return False, None
 
-
 def get_device(local_rank, use_ddp):
     if torch.cuda.is_available():
         return torch.device(f"cuda:{local_rank}" if use_ddp else "cuda:0")
     return torch.device("cpu")
- 
-
 
 def get_model(device, is_dist, local_rank):
     model = VivitForVideoClassification.from_pretrained(
@@ -53,7 +51,6 @@ def download_data(bucket: str, key: str, local_path: str, data_dir: str):
     with zipfile.ZipFile(local_path, 'r') as zip_ref:
         zip_ref.extractall(data_dir)
     print("Data extracted")
-
 
 def sliding_windows(video, window_size=10, stride=5) -> torch.Tensor:
     T = video.shape[0]
@@ -174,13 +171,62 @@ def validate(model, val_loader, criterion, device, is_dist, window_size=10, stri
     print(f"    Val Loss: {avg_loss:.4f} | Val Accuracy: {accuracy:.2f}% ({correct}/{total})")
     return avg_loss, accuracy
 
+def test_model(model, test_loader, device, window_size=10, stride=5):
+    model.eval()
 
-def test():
-    pass
+    all_preds = []
+    all_labels = []
 
+    with torch.no_grad():
+        for videos, labels in test_loader:
+            videos = videos.to(device)
+            labels = labels.to(device)
 
-def get_dataloader(datapath: str, is_dist: bool, num_workers = 2, augment = False, batch_size = 16):
-    dataset = ViolentVideoDataset(datapath)
+            batch_video_logits = []
+
+            for video in videos:
+                # ensure shape [T, C, H, W]
+                if video.shape[0] == 3:
+                    video = video.permute(1, 0, 2, 3)
+
+                # sliding windows
+                windows = sliding_windows(
+                    video,
+                    window_size=window_size,
+                    stride=stride
+                ).to(device)
+
+                # forward pass
+                outputs = model(windows).logits  # [num_windows, num_classes]
+
+                # MIL aggregation (same as validation)
+                video_logits = torch.logsumexp(outputs, dim=0)
+
+                batch_video_logits.append(video_logits)
+
+            batch_video_logits = torch.stack(batch_video_logits)
+
+            preds = torch.argmax(batch_video_logits, dim=-1)
+
+            all_preds.extend(preds.cpu().numpy())
+            all_labels.extend(labels.cpu().numpy())
+
+    # ===== METRICS =====
+    acc = accuracy_score(all_labels, all_preds)
+    cm = confusion_matrix(all_labels, all_preds)
+    report = classification_report(all_labels, all_preds, target_names=["non_violent", "violent"])
+
+    print("\n===== FINAL TEST RESULTS =====")
+    print(f"Accuracy: {acc * 100:.2f}%\n")
+    print("Confusion Matrix:")
+    print(cm)
+    print("\nClassification Report:")
+    print(report)
+
+    return acc, cm, report
+
+def get_dataloader(datapath: str, is_dist: bool, augment=True, num_workers = 2, batch_size = 16):
+    dataset = ViolentVideoDataset(datapath, augment)
     distributed_sampler = None
     shuffle_data = True
 
@@ -200,13 +246,12 @@ def get_dataloader(datapath: str, is_dist: bool, num_workers = 2, augment = Fals
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--epochs', type=int, default=10)
+    parser.add_argument('--epochs', type=int, default=1)
     parser.add_argument('--batch-size', type=int, default=1)
     parser.add_argument('--checkpoint-dir', type=str, default='./checkpoint')
     parser.add_argument('--model-dir', type=str, default='./model')
     parser.add_argument('--data-dir', type=str, default='./data')
     return parser.parse_args()
-
 
 
 if __name__ == '__main__':
@@ -218,20 +263,31 @@ if __name__ == '__main__':
     device = get_device(local_rank, is_dist)
 
     model = get_model(device, is_dist, local_rank)
-
-    train_data_path = os.path.join(args.data_dir, 'train')
+    #
+    # train_data_path = os.path.join(args.data_dir, 'train')
     test_data_path = os.path.join(args.data_dir, 'test')
-    valid_data_path = os.path.join(args.data_dir, 'valid')
-
+    # valid_data_path = os.path.join(args.data_dir, 'valid')
+    #
     bucket = 'agression-model'
     file_name = 'data/videos'
     download_data(bucket, file_name, f"{args.data_dir}/videos", args.data_dir)
+    #
+    # train_loader, train_sampler = get_dataloader(train_data_path, is_dist, batch_size=args.batch_size)
+    # valid_loader, _ = get_dataloader(valid_data_path, is_dist, batch_size=args.batch_size, augment=False)
+    test_loader = get_dataloader(test_data_path, is_dist, batch_size=args.batch_size, augment=False)
+    #
+    # optimizer = optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-5)
+    # criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
+    #
+    # train(args.epochs, model, train_loader, valid_loader, train_sampler, optimizer, criterion, device, is_dist, checkpoint_dir=args.checkpoint_dir)
 
-    train_loader, train_sampler = get_dataloader(train_data_path, is_dist, batch_size=args.batch_size)
-    valid_loader, _ = get_dataloader(valid_data_path, is_dist, batch_size=args.batch_size)
-    # test_loader = get_dataloader(args.data_dir)
+    s3 = boto3.client("s3")
+    local_p = "./model"
+    bucket = "agression-model"
+    key = "vivit/checkpoints/best_model.pt"
+    s3.download_file(bucket, key, local_p)
+    checkpoint = torch.load(local_p)
+    model.load_state_dict(checkpoint['state_dict'])
+    test_model(model, test_loader, device)
 
-    optimizer = optim.AdamW(model.parameters(), lr=3e-4)
-    criterion = nn.CrossEntropyLoss()
 
-    train(args.epochs, model, train_loader, valid_loader, train_sampler, optimizer, criterion, device, is_dist, checkpoint_dir=args.checkpoint_dir)
