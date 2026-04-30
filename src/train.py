@@ -67,7 +67,6 @@ def sliding_windows(video, window_size=10, stride=5) -> torch.Tensor:
             pad = video[-1:].repeat(window_size - T, 1, 1, 1)
             video = torch.cat((video, pad), 0)
         windows.append(video)
-    print(len(windows))
     return torch.stack(windows)
 
 
@@ -75,13 +74,15 @@ def train(
         epochs: int,
         model,
         train_loader,
+        val_loader,
         train_sampler,
         optimizer,
         criterion,
         device,
         is_dist,
+        checkpoint_dir,
         window_size=10,
-        stride=5
+        stride=5,
 ):
     print("Training Vivit Model..")
     base_model = model.module if is_dist else model
@@ -106,7 +107,7 @@ def train(
 
                 with autocast(device_type="cuda"):
                     outputs = model(windows).logits
-                    video_logits = torch.logsumexp(outputs, dim=-0)
+                    video_logits = torch.max(outputs, dim=-0)
 
                 batch_video_logits.append(video_logits)
             batch_video_logits = torch.stack(batch_video_logits)
@@ -120,10 +121,57 @@ def train(
 
             running_loss += loss.item()
 
-        print(f"--- Epoch {epoch+1}/{epochs} Complete. Avg Loss: {running_loss/len(train_loader):.4f} ---")
+        avg_train_loss = running_loss / len(train_loader)
+        print(f"--- Epoch {epoch + 1}/{epochs} | Train Loss: {avg_train_loss:.4f} ---")
 
-def validate():
-    pass
+        # Run validation
+        val_loss, val_acc = validate(model, val_loader, criterion, device, is_dist, window_size=window_size, stride=stride)
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            torch.save({
+                'epoch': epoch + 1,
+                'model_state_dict': (model.module if is_dist else model).state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'val_loss': val_loss,
+                'val_acc': val_acc,
+            }, os.path.join(checkpoint_dir, "best_model.pt"))
+
+
+def validate(model, val_loader, criterion, device, is_dist, window_size=10, stride=5):
+    model.eval()
+    running_loss=0.0
+    correct = 0
+    total = 0
+
+    with torch.no_grad():
+        for batch_idx, (videos, labels) in enumerate(val_loader):
+            videos, labels = videos.to(device), labels.to(device)
+            batch_video_logits = []
+
+            for video in videos:
+                if video.shape[0] == 3:
+                    video = video.permute(1, 0, 2, 3)
+                windows = sliding_windows(video, window_size=window_size, stride=stride).to(device)
+
+                with autocast(device_type="cuda"):
+                    outputs = model(windows).logits
+                    video_logits = torch.max(outputs, dim=0)
+
+                batch_video_logits.append(video_logits)
+                torch.cuda.empty_cache()
+
+            batch_video_logits = torch.stack(batch_video_logits)
+            loss = criterion(batch_video_logits, labels)
+            running_loss += loss.item()
+
+            preds = torch.argmax(batch_video_logits, dim=-1)
+            correct += (preds == labels).sum().item()
+            total += labels.size(0)
+
+    avg_loss = running_loss/len(val_loader)
+    accuracy = correct / total * 100
+    print(f"    Val Loss: {avg_loss:.4f} | Val Accuracy: {accuracy:.2f}% ({correct}/{total})")
+    return avg_loss, accuracy
 
 
 def test():
@@ -167,26 +215,22 @@ if __name__ == '__main__':
     os.makedirs(args.data_dir, exist_ok=True)
     os.makedirs(args.checkpoint_dir, exist_ok=True)
     device = get_device(local_rank, is_dist)
-    print("DATA DIR:", args.data_dir)
 
     model = get_model(device, is_dist, local_rank)
 
     train_data_path = os.path.join(args.data_dir, 'train')
     test_data_path = os.path.join(args.data_dir, 'test')
-    valid_data_path = os.path.join(args.data_dir, 'val')
+    valid_data_path = os.path.join(args.data_dir, 'valid')
 
     bucket = 'agression-model'
     file_name = 'data/videos'
-    print("DATA ROOT:", args.data_dir)
-    print(os.listdir(args.data_dir))
-    print(os.listdir("/opt/ml/input/data"))
     download_data(bucket, file_name, f"{args.data_dir}/videos", args.data_dir)
 
     train_loader, train_sampler = get_dataloader(train_data_path, is_dist, batch_size=args.batch_size)
-    # valid_loader = get_dataloader(args.data_dir)
+    valid_loader = get_dataloader(valid_data_path, is_dist, batch_size=args.batch_size)
     # test_loader = get_dataloader(args.data_dir)
 
     optimizer = optim.AdamW(model.parameters(), lr=1e-4)
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
 
-    train(args.epochs, model, train_loader, train_sampler, optimizer, criterion, device, is_dist)
+    train(args.epochs, model, train_loader, valid_loader, train_sampler, optimizer, criterion, device, is_dist, checkpoint_dir=args.checkpoint_dir)
