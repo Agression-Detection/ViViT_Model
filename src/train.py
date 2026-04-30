@@ -13,6 +13,7 @@ from torch.utils.data import DataLoader, DistributedSampler
 from dataset import ViolentVideoDataset
 from torch.amp import GradScaler, autocast
 from sklearn.metrics import confusion_matrix, classification_report, accuracy_score
+from tqdm import tqdm
 
 # TODO: frame size = 244* 244
 
@@ -177,8 +178,10 @@ def test_model(model, test_loader, device, window_size=10, stride=5):
     all_preds = []
     all_labels = []
 
+    pbar = tqdm(test_loader, desc="Testing", dynamic_ncols=True)
+
     with torch.no_grad():
-        for videos, labels in test_loader:
+        for videos, labels in pbar:
             videos = videos.to(device)
             labels = labels.to(device)
 
@@ -282,7 +285,7 @@ if __name__ == '__main__':
     # train(args.epochs, model, train_loader, valid_loader, train_sampler, optimizer, criterion, device, is_dist, checkpoint_dir=args.checkpoint_dir)
 
     s3 = boto3.client("s3")
-    local_p = "./model"
+    local_p = "./model/model.pt"
     bucket = "agression-model"
     key = "vivit/checkpoints/best_model.pt"
     s3.download_file(bucket, key, local_p)
