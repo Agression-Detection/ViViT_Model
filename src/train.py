@@ -273,11 +273,11 @@ if __name__ == '__main__':
     #
     bucket = 'agression-model'
     file_name = 'data/videos'
-    download_data(bucket, file_name, f"{args.data_dir}/videos", args.data_dir)
+    #download_data(bucket, file_name, f"{args.data_dir}/videos", args.data_dir)
     #
     # train_loader, train_sampler = get_dataloader(train_data_path, is_dist, batch_size=args.batch_size)
     # valid_loader, _ = get_dataloader(valid_data_path, is_dist, batch_size=args.batch_size, augment=False)
-    test_loader = get_dataloader(test_data_path, is_dist, batch_size=args.batch_size, augment=False)
+    test_loader, _= get_dataloader(test_data_path, is_dist, batch_size=args.batch_size, augment=False)
     #
     # optimizer = optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-5)
     # criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
@@ -288,9 +288,9 @@ if __name__ == '__main__':
     local_p = "./model/model.pt"
     bucket = "agression-model"
     key = "vivit/checkpoints/best_model.pt"
-    s3.download_file(bucket, key, local_p)
-    checkpoint = torch.load(local_p)
-    model.load_state_dict(checkpoint['state_dict'])
+   # s3.download_file(bucket, key, local_p)
+    checkpoint = torch.load(local_p, map_location=device)
+    model.load_state_dict(checkpoint['model_state_dict'])
     test_model(model, test_loader, device)
 
 
