@@ -96,10 +96,11 @@ def train(
         running_loss = 0.0
 
         for batch_idx, (videos, labels) in enumerate(train_loader):
-            videos, labels = videos.to(device), labels.to(device)
+            labels = labels.to(device)
             optimizer.zero_grad()
             batch_video_logits = []
             for video in videos:
+                video = video.to(device)
                 if video.shape[0] == 3:
                     video = video.permute(1, 0, 2, 3)
                 windows = sliding_windows(video, window_size=window_size, stride=stride).to(device)
@@ -144,10 +145,11 @@ def validate(model, val_loader, criterion, device, is_dist, window_size=10, stri
 
     with torch.no_grad():
         for batch_idx, (videos, labels) in enumerate(val_loader):
-            videos, labels = videos.to(device), labels.to(device)
+            labels = labels.to(device)
             batch_video_logits = []
 
             for video in videos:
+                video = video.to(device)
                 if video.shape[0] == 3:
                     video = video.permute(1, 0, 2, 3)
                 windows = sliding_windows(video, window_size=window_size, stride=stride).to(device)
@@ -182,12 +184,12 @@ def test_model(model, test_loader, device, window_size=10, stride=5):
 
     with torch.no_grad():
         for videos, labels in pbar:
-            videos = videos.to(device)
             labels = labels.to(device)
 
             batch_video_logits = []
 
             for video in videos:
+                video = video.to(device)
                 # ensure shape [T, C, H, W]
                 if video.shape[0] == 3:
                     video = video.permute(1, 0, 2, 3)
@@ -228,6 +230,10 @@ def test_model(model, test_loader, device, window_size=10, stride=5):
 
     return acc, cm, report
 
+def collate(batch):
+    videos, labels = zip(*batch)
+    return list(videos), torch.stack(labels)
+
 def get_dataloader(datapath: str, is_dist: bool, augment=True, num_workers = 2, batch_size = 16):
     dataset = ViolentVideoDataset(datapath, augment)
     distributed_sampler = None
@@ -243,7 +249,8 @@ def get_dataloader(datapath: str, is_dist: bool, augment=True, num_workers = 2, 
         batch_size = batch_size,
         shuffle = shuffle_data,
         sampler = distributed_sampler,
-        num_workers = num_workers
+        num_workers = num_workers,
+        collate_fn = collate
     )
     return dataloader, distributed_sampler
 
@@ -267,30 +274,30 @@ if __name__ == '__main__':
 
     model = get_model(device, is_dist, local_rank)
     #
-    # train_data_path = os.path.join(args.data_dir, 'train')
+    train_data_path = os.path.join(args.data_dir, 'train')
     test_data_path = os.path.join(args.data_dir, 'test')
-    # valid_data_path = os.path.join(args.data_dir, 'valid')
+    valid_data_path = os.path.join(args.data_dir, 'valid')
     #
     bucket = 'agression-model'
     file_name = 'data/videos'
-    #download_data(bucket, file_name, f"{args.data_dir}/videos", args.data_dir)
+    download_data(bucket, file_name, f"{args.data_dir}/videos", args.data_dir)
     #
-    # train_loader, train_sampler = get_dataloader(train_data_path, is_dist, batch_size=args.batch_size)
-    # valid_loader, _ = get_dataloader(valid_data_path, is_dist, batch_size=args.batch_size, augment=False)
+    train_loader, train_sampler = get_dataloader(train_data_path, is_dist, batch_size=args.batch_size)
+    valid_loader, _ = get_dataloader(valid_data_path, is_dist, batch_size=args.batch_size, augment=False)
     test_loader, _= get_dataloader(test_data_path, is_dist, batch_size=args.batch_size, augment=False)
     #
-    # optimizer = optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-5)
-    # criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
+    optimizer = optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-5)
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
     #
-    # train(args.epochs, model, train_loader, valid_loader, train_sampler, optimizer, criterion, device, is_dist, checkpoint_dir=args.checkpoint_dir)
+    train(args.epochs, model, train_loader, valid_loader, train_sampler, optimizer, criterion, device, is_dist, checkpoint_dir=args.checkpoint_dir)
 
-    s3 = boto3.client("s3")
-    local_p = "./model/model.pt"
-    bucket = "agression-model"
-    key = "vivit/checkpoints/best_model.pt"
-   # s3.download_file(bucket, key, local_p)
-    checkpoint = torch.load(local_p, map_location=device)
-    model.load_state_dict(checkpoint['model_state_dict'])
+   #  s3 = boto3.client("s3")
+   #  local_p = "./model/model.pt"
+   #  bucket = "agression-model"
+   #  key = "vivit/checkpoints/best_model.pt"
+   # # s3.download_file(bucket, key, local_p)
+   #  checkpoint = torch.load(local_p, map_location=device)
+   #  model.load_state_dict(checkpoint['model_state_dict'])
     test_model(model, test_loader, device)
 
 

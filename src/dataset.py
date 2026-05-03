@@ -10,24 +10,20 @@ spatial_T = T.Compose([
         ])
 
 def temporal_T(video):
-    T = video.shape[0]
+    num_frames = video.shape[0]
     mask_size = 2
 
-    if random.random() < 0.5 and T > 5:
+    if random.random() < 0.5 and num_frames > 5:
         shift = random.randint(-2, 2)
         video = torch.roll(video, shifts=shift, dims=0)
 
     # Change speed. Remove one in every x frames
-    if random.random() < 0.3 and T > 10:
-        stride = random.choice([2, 3, 4])
+    if random.random() < 0.3 and num_frames > 10:
+        stride = random.choice([2, 3])
         video = video[::stride]
 
-    if random.random() < 0.2 and T > 12:
-        start = random.randint(0, T - 10)
-        video = video[start:start + 10]
-
     if random.random() < 0.3:
-        t0 = random.randint(0, T - mask_size)
+        t0 = random.randint(0, num_frames - mask_size)
         video[t0:t0 + mask_size] = 0
 
     return video
@@ -74,8 +70,7 @@ class ViolentVideoDataset(Dataset):
         label = self.labels[idx]
 
         video = torch.load(tensor_path, weights_only=True).float() / 255.0
-        print("RAW SHAPE:", video.shape)
-        print("RAW DTYPE:", video.dtype)
+        video = video.permute(1, 0, 2, 3)
         label = torch.tensor(label, dtype=torch.long)
 
         if self.augment:
