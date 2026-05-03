@@ -21,8 +21,8 @@ estimator = PyTorch(
         }
     },
     hyperparameters={
-        'epochs': 20,
-        'batch-size': 4,
+        'epochs': 30,
+        'batch-size': 12,
         'checkpoint-dir': local_checkpoint_dir,
         'model-dir': '/opt/ml/model',
         'data-dir': '/opt/ml/input'

@@ -5,6 +5,7 @@ import zipfile
 import tarfile
 import torch
 import torch.distributed as dist
+from collections import Counter
 import torch.nn as nn
 import torch.optim as optim
 from transformers import VivitForVideoClassification
@@ -78,6 +79,7 @@ def train(
         val_loader,
         train_sampler,
         optimizer,
+        scheduler,
         criterion,
         device,
         is_dist,
@@ -95,9 +97,9 @@ def train(
     for epoch in range(epochs):
         if epoch == backbone_unfreeze_epoch:
             base = model.module if is_dist else model
+            print("Unfreezed Vivit backbone")
             for param in base.vivit.parameters():
                 param.requires_grad = True
-                print("Unfreezed Vivit backbone")
         if is_dist and train_sampler is not None:
             train_sampler.set_epoch(epoch)
         
@@ -130,6 +132,7 @@ def train(
 
             running_loss += loss.item()
 
+        scheduler.step()
         avg_train_loss = running_loss / len(train_loader)
         print(f"--- Epoch {epoch + 1}/{epochs} | Train Loss: {avg_train_loss:.4f} ---")
 
@@ -144,6 +147,7 @@ def train(
                 'val_loss': val_loss,
                 'val_acc': val_acc,
             }, os.path.join(checkpoint_dir, "best_model.pt"))
+            print(f"Best model saved (val_loss={val_loss:.4f}, val_acc={val_acc:.2f}%)")
 
 
 def validate(model, val_loader, criterion, device, is_dist, window_size=10, stride=5):
@@ -294,14 +298,39 @@ if __name__ == '__main__':
     train_loader, train_sampler = get_dataloader(train_data_path, is_dist, batch_size=args.batch_size)
     valid_loader, _ = get_dataloader(valid_data_path, is_dist, batch_size=args.batch_size, augment=False)
     test_loader, _= get_dataloader(test_data_path, is_dist, batch_size=args.batch_size, augment=False)
-    #
+    labels = train_loader.dataset.labels
+    frame_counts = []
+    for path in train_loader.dataset.tensor_paths:
+        t = torch.load(path, weights_only=True)
+        frame_counts.append(t.shape[1])  # shape is [C, T, H, W] so dim 1 is T
+
+    print(f"Min frames: {min(frame_counts)}")
+    print(f"Max frames: {max(frame_counts)}")
+    print(f"Mean frames: {sum(frame_counts) / len(frame_counts):.1f}")
+    print(f"Videos shorter than 10: {sum(1 for f in frame_counts if f < 10)}")
+    print(f"Videos shorter than 32: {sum(1 for f in frame_counts if f < 32)}")
+    n_nonviolent = sum(1 for l in labels if l == 0)
+    n_violent = sum(1 for l in labels if l == 1)
+    total = n_nonviolent + n_violent
+
+    weights = torch.tensor([
+        total / (2 * n_nonviolent),
+        total / (2 * n_violent),
+    ], dtype=torch.float).to(device)
+
+    print(f"Class weights: non_violent={weights[0]:.3f}, violent={weights[1]:.3f}")
+
     optimizer = optim.AdamW([
-        {'params': model.vivit.parameters(), 'lr': 1e-5},
-        {'params': model.classifier.parameters(), 'lr': 1e-4}
+        {'params': (model.module if is_dist else model).vivit.parameters(), 'lr': 1e-5},
+        {'params': (model.module if is_dist else model).classifier.parameters(), 'lr': 1e-4}
     ])
-    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
-    #
-    train(args.epochs, model, train_loader, valid_loader, train_sampler, optimizer, criterion, device, is_dist, checkpoint_dir=args.checkpoint_dir)
+    criterion = nn.CrossEntropyLoss(weight=weights, label_smoothing=0.1)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=args.epochs,
+        eta_min=1e-6
+    )
+    train(args.epochs, model, train_loader, valid_loader, train_sampler, optimizer, scheduler, criterion, device, is_dist, checkpoint_dir=args.checkpoint_dir)
 
    #  s3 = boto3.client("s3")
    #  local_p = "./model/model.pt"
