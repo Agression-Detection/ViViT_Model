@@ -41,6 +41,9 @@ def get_model(device, is_dist, local_rank):
     )
     model.config.id2label = {0: "non_violent", 1: "violent"}
     model.config.label2id = {"non_violent": 0, "violent": 1}
+    for param in model.vivit.parameters():
+        param.requires_grad = False
+
     model = model.to(device)
     if is_dist: model = DDP(model, device_ids=[local_rank])
     return model
@@ -81,6 +84,7 @@ def train(
         checkpoint_dir,
         window_size=10,
         stride=5,
+        backbone_unfreeze_epoch=5
 ):
     print("Training Vivit Model..")
     base_model = model.module if is_dist else model
@@ -89,6 +93,11 @@ def train(
     best_val_loss = float('inf')
 
     for epoch in range(epochs):
+        if epoch == backbone_unfreeze_epoch:
+            base = model.module if is_dist else model
+            for param in base.vivit.parameters():
+                param.requires_grad = True
+                print("Unfreezed Vivit backbone")
         if is_dist and train_sampler is not None:
             train_sampler.set_epoch(epoch)
         
@@ -286,7 +295,10 @@ if __name__ == '__main__':
     valid_loader, _ = get_dataloader(valid_data_path, is_dist, batch_size=args.batch_size, augment=False)
     test_loader, _= get_dataloader(test_data_path, is_dist, batch_size=args.batch_size, augment=False)
     #
-    optimizer = optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-5)
+    optimizer = optim.AdamW([
+        {'params': model.vivit.parameters(), 'lr': 1e-5},
+        {'params': model.classifier.parameters(), 'lr': 1e-4}
+    ])
     criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
     #
     train(args.epochs, model, train_loader, valid_loader, train_sampler, optimizer, criterion, device, is_dist, checkpoint_dir=args.checkpoint_dir)
