@@ -3,22 +3,24 @@ import os
 import boto3
 import zipfile
 import tarfile
+import matplotlib.pyplot as plt
+import numpy as np
 import torch
 import torch.distributed as dist
-from collections import Counter
+import json
 import torch.nn as nn
 import torch.optim as optim
 from transformers import VivitForVideoClassification
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, DistributedSampler
-from dataset import ViolentVideoDataset
 from torch.amp import GradScaler, autocast
-from sklearn.metrics import confusion_matrix, classification_report, accuracy_score
 from tqdm import tqdm
+
+from dataset import ViolentVideoDataset
+from evaluate import *
 
 # TODO: frame size = 244* 244
 
-# init DDP
 def init_ddp():
     if "RANK" in os.environ:
         dist.init_process_group(backend='nccl')
@@ -71,28 +73,19 @@ def sliding_windows(video, window_size=10, stride=5) -> torch.Tensor:
         windows.append(video)
     return torch.stack(windows)
 
-
 def train(
-        epochs: int,
-        model,
-        train_loader,
-        val_loader,
-        train_sampler,
-        optimizer,
-        scheduler,
-        criterion,
-        device,
-        is_dist,
-        checkpoint_dir,
-        window_size=10,
-        stride=5,
-        backbone_unfreeze_epoch=5
+        epochs: int, model, train_loader, val_loader, train_sampler,
+        optimizer, scheduler, criterion, device, is_dist, checkpoint_dir,
+        window_size=10, stride=5, backbone_unfreeze_epoch=5
 ):
     print("Training Vivit Model..")
     base_model = model.module if is_dist else model
     base_model.gradient_checkpointing_enable()
     scaler = GradScaler()
     best_val_loss = float('inf')
+    train_losses = []
+    val_losses = []
+    val_accs = []
 
     for epoch in range(epochs):
         if epoch == backbone_unfreeze_epoch:
@@ -149,6 +142,11 @@ def train(
             }, os.path.join(checkpoint_dir, "best_model.pt"))
             print(f"Best model saved (val_loss={val_loss:.4f}, val_acc={val_acc:.2f}%)")
 
+        train_losses.append(avg_train_loss)
+        val_losses.append(val_loss)
+        val_accs.append(val_acc)
+    return train_losses, val_losses, val_accs
+
 
 def validate(model, val_loader, criterion, device, is_dist, window_size=10, stride=5):
     model.eval()
@@ -187,62 +185,6 @@ def validate(model, val_loader, criterion, device, is_dist, window_size=10, stri
     print(f"    Val Loss: {avg_loss:.4f} | Val Accuracy: {accuracy:.2f}% ({correct}/{total})")
     return avg_loss, accuracy
 
-def test_model(model, test_loader, device, window_size=10, stride=5):
-    model.eval()
-
-    all_preds = []
-    all_labels = []
-
-    pbar = tqdm(test_loader, desc="Testing", dynamic_ncols=True)
-
-    with torch.no_grad():
-        for videos, labels in pbar:
-            labels = labels.to(device)
-
-            batch_video_logits = []
-
-            for video in videos:
-                video = video.to(device)
-                # ensure shape [T, C, H, W]
-                if video.shape[0] == 3:
-                    video = video.permute(1, 0, 2, 3)
-
-                # sliding windows
-                windows = sliding_windows(
-                    video,
-                    window_size=window_size,
-                    stride=stride
-                ).to(device)
-
-                # forward pass
-                outputs = model(windows).logits  # [num_windows, num_classes]
-
-                # MIL aggregation (same as validation)
-                video_logits = torch.logsumexp(outputs, dim=0)
-
-                batch_video_logits.append(video_logits)
-
-            batch_video_logits = torch.stack(batch_video_logits)
-
-            preds = torch.argmax(batch_video_logits, dim=-1)
-
-            all_preds.extend(preds.cpu().numpy())
-            all_labels.extend(labels.cpu().numpy())
-
-    # ===== METRICS =====
-    acc = accuracy_score(all_labels, all_preds)
-    cm = confusion_matrix(all_labels, all_preds)
-    report = classification_report(all_labels, all_preds, target_names=["non_violent", "violent"])
-
-    print("\n===== FINAL TEST RESULTS =====")
-    print(f"Accuracy: {acc * 100:.2f}%\n")
-    print("Confusion Matrix:")
-    print(cm)
-    print("\nClassification Report:")
-    print(report)
-
-    return acc, cm, report
-
 def collate(batch):
     videos, labels = zip(*batch)
     return list(videos), torch.stack(labels)
@@ -267,6 +209,12 @@ def get_dataloader(datapath: str, is_dist: bool, augment=True, num_workers = 2, 
     )
     return dataloader, distributed_sampler
 
+def download_checkpoint(bucket, key, local_path):
+    print(f"Downloading checkpoint to {local_path}...", flush=True)
+    s3 = boto3.client('s3')
+    s3.download_file(bucket, key, local_path)
+    print("Checkpoint downloaded", flush=True)
+
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--epochs', type=int, default=1)
@@ -286,15 +234,15 @@ if __name__ == '__main__':
     device = get_device(local_rank, is_dist)
 
     model = get_model(device, is_dist, local_rank)
-    #
+
     train_data_path = os.path.join(args.data_dir, 'train')
     test_data_path = os.path.join(args.data_dir, 'test')
     valid_data_path = os.path.join(args.data_dir, 'valid')
-    #
+
     bucket = 'agression-model'
     file_name = 'data/videos'
     download_data(bucket, file_name, f"{args.data_dir}/videos", args.data_dir)
-    #
+
     train_loader, train_sampler = get_dataloader(train_data_path, is_dist, batch_size=args.batch_size)
     valid_loader, _ = get_dataloader(valid_data_path, is_dist, batch_size=args.batch_size, augment=False)
     test_loader, _= get_dataloader(test_data_path, is_dist, batch_size=args.batch_size, augment=False)
@@ -302,13 +250,13 @@ if __name__ == '__main__':
     frame_counts = []
     for path in train_loader.dataset.tensor_paths:
         t = torch.load(path, weights_only=True)
-        frame_counts.append(t.shape[1])  # shape is [C, T, H, W] so dim 1 is T
+        frame_counts.append(t.shape[1])
 
-    print(f"Min frames: {min(frame_counts)}")
-    print(f"Max frames: {max(frame_counts)}")
-    print(f"Mean frames: {sum(frame_counts) / len(frame_counts):.1f}")
-    print(f"Videos shorter than 10: {sum(1 for f in frame_counts if f < 10)}")
-    print(f"Videos shorter than 32: {sum(1 for f in frame_counts if f < 32)}")
+    # print(f"Min frames: {min(frame_counts)}")
+    # print(f"Max frames: {max(frame_counts)}")
+    # print(f"Mean frames: {sum(frame_counts) / len(frame_counts):.1f}")
+    # print(f"Videos shorter than 10: {sum(1 for f in frame_counts if f < 10)}")
+    # print(f"Videos shorter than 32: {sum(1 for f in frame_counts if f < 32)}")
     n_nonviolent = sum(1 for l in labels if l == 0)
     n_violent = sum(1 for l in labels if l == 1)
     total = n_nonviolent + n_violent
@@ -330,15 +278,26 @@ if __name__ == '__main__':
         T_max=args.epochs,
         eta_min=1e-6
     )
-    train(args.epochs, model, train_loader, valid_loader, train_sampler, optimizer, scheduler, criterion, device, is_dist, checkpoint_dir=args.checkpoint_dir)
 
-   #  s3 = boto3.client("s3")
-   #  local_p = "./model/model.pt"
-   #  bucket = "agression-model"
-   #  key = "vivit/checkpoints/best_model.pt"
-   # # s3.download_file(bucket, key, local_p)
-   #  checkpoint = torch.load(local_p, map_location=device)
-   #  model.load_state_dict(checkpoint['model_state_dict'])
-    test_model(model, test_loader, device)
+    # Train model
+    train_losses, val_losses, val_accs = train(args.epochs, model, train_loader, valid_loader, train_sampler, optimizer, scheduler, criterion, device, is_dist, checkpoint_dir=args.checkpoint_dir)
 
+    # Load best checkpoint
+    best_ckpt = os.path.join(args.checkpoint_dir, 'best_model.pt')
+    if os.path.exists(best_ckpt):
+        ckpt = torch.load(best_ckpt, map_location=device)
+        (model.module if is_dist else model).load_state_dict(ckpt['model_state_dict'])
+        print(f"Loaded best model from epoch {ckpt['epoch']}")
 
+    # Run evaluation
+    all_preds, all_labels, all_probs, _ = evaluate(model, test_loader, criterion, device, is_dist)
+
+    # Generate report from evaluation
+    generate_report(
+        all_preds, all_labels, all_probs, train_losses,
+        val_losses, val_accs, output_dir=args.checkpoint_dir, model_dir=args.model_dir,
+    )
+
+    torch.save(
+        (model.module if is_dist else model).state_dict(),
+        os.path.join(args.model_dir, 'best_model.pt'))
