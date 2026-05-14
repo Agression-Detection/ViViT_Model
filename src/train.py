@@ -12,6 +12,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, DistributedSampler
 from torch.amp import GradScaler, autocast
 from tqdm import tqdm
+from huggingface_hub import hf_hub_download
 
 from dataset import *
 from model import *
@@ -32,11 +33,15 @@ def get_device(local_rank, use_ddp):
         return torch.device(f"cuda:{local_rank}" if use_ddp else "cuda:0")
     return torch.device("cpu")
 
-def download_data(bucket: str, key: str, local_path: str, data_dir: str):
-    s3 = boto3.client('s3')
-    response = s3.download_file(Bucket=bucket, Key=key, Filename=local_path)
-    print("Downloaded data!")
-    with zipfile.ZipFile(local_path, 'r') as zip_ref:
+def download_data(bucket: str, key: str, data_dir: str):
+    print("Downloading data (This WILL take a while)...")
+    data_path = hf_hub_download(
+        repo_id="b1n4r33/ViolentVideos",
+        filename="videos.zip",
+        repo_type="dataset"
+    )
+    print("Extracting...")
+    with zipfile.ZipFile(data_path, 'r') as zip_ref:
         zip_ref.extractall(data_dir)
     print("Data extracted")
 
@@ -224,7 +229,7 @@ if __name__ == '__main__':
     bucket = 'agression-model'
     file_name = 'data/videos'
     # Requires aws local credentials
-    download_data(bucket, file_name, f"{args.data_dir}/videos", args.data_dir)
+    download_data(bucket, file_name, args.data_dir)
 
     train_loader, train_sampler = get_dataloader(train_data_path, is_dist, batch_size=args.batch_size)
     valid_loader, _ = get_dataloader(valid_data_path, is_dist, batch_size=args.batch_size, augment=False)
