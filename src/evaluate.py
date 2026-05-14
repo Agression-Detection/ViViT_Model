@@ -9,7 +9,7 @@ from sklearn.metrics import (confusion_matrix, classification_report,
 import os
 import json
 
-def evaluate(model, test_loader, criterion, device, is_dist, window_size=10, stride=5):
+def evaluate(model, test_loader, criterion, device, is_dist, window_size=10, stride=5, threshold=0.3):
     model.eval()
     all_preds = []
     all_labels = []
@@ -43,7 +43,7 @@ def evaluate(model, test_loader, criterion, device, is_dist, window_size=10, str
             running_loss += loss.item()
 
             probs = torch.softmax(batch_video_logits, dim=-1)[:, 1]
-            preds = torch.argmax(batch_video_logits, dim=-1)
+            preds = (probs > threshold).long()
 
             all_probs.extend(probs.cpu().numpy())
             all_preds.extend(preds.cpu().numpy())
@@ -56,9 +56,7 @@ def evaluate(model, test_loader, criterion, device, is_dist, window_size=10, str
     return all_preds, all_labels, all_probs, avg_loss
 
 def generate_report(
-    all_preds, all_labels, all_probs,
-    train_losses, val_losses, val_accs,
-    output_dir, model_dir
+    all_preds, all_labels, all_probs,train_losses, val_losses, val_accs, output_dir, model_dir
 ):
     os.makedirs(output_dir, exist_ok=True)
     class_names = ['non_violent', 'violent']

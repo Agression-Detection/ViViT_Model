@@ -22,10 +22,11 @@ estimator = PyTorch(
     },
     hyperparameters={
         'epochs': 25,
-        'batch-size': 48,
+        'batch-size': 64,
         'checkpoint-dir': '/opt/ml/checkpoints/',
         'model-dir': '/opt/ml/model',
-        'data-dir': '/opt/ml/input'
+        'data-dir': '/opt/ml/input',
+        'threshold': 0.3,
     },
     output_path=output_s3_uri,
     checkpoint_s3_uri=checkpoint_s3_uri,

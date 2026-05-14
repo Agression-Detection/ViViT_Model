@@ -7,16 +7,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.distributed as dist
-import json
 import torch.nn as nn
 import torch.optim as optim
-from transformers import VivitForVideoClassification
-from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, DistributedSampler
 from torch.amp import GradScaler, autocast
 from tqdm import tqdm
 
-from dataset import ViolentVideoDataset
+from dataset import *
+from model import *
 from evaluate import *
 
 # TODO: frame size = 244* 244
@@ -33,23 +31,6 @@ def get_device(local_rank, use_ddp):
     if torch.cuda.is_available():
         return torch.device(f"cuda:{local_rank}" if use_ddp else "cuda:0")
     return torch.device("cpu")
-
-def get_model(device, is_dist, local_rank):
-    model = VivitForVideoClassification.from_pretrained(
-        "google/vivit-b-16x2-kinetics400", 
-        num_labels=2, 
-        num_frames=10,
-        ignore_mismatched_sizes=True,
-        use_safetensors=True,
-    )
-    model.config.id2label = {0: "non_violent", 1: "violent"}
-    model.config.label2id = {"non_violent": 0, "violent": 1}
-    for param in model.vivit.parameters():
-        param.requires_grad = False
-
-    model = model.to(device)
-    if is_dist: model = DDP(model, device_ids=[local_rank])
-    return model
 
 def download_data(bucket: str, key: str, local_path: str, data_dir: str):
     s3 = boto3.client('s3')
@@ -76,7 +57,7 @@ def sliding_windows(video, window_size=10, stride=5) -> torch.Tensor:
 def train(
         epochs: int, model, train_loader, val_loader, train_sampler,
         optimizer, scheduler, criterion, device, is_dist, checkpoint_dir,
-        window_size=10, stride=5, backbone_unfreeze_epoch=5
+        window_size=10, stride=5, backbone_unfreeze_epoch=5, threshold=0.3
 ):
     print("Training Vivit Model..")
     base_model = model.module if is_dist else model
@@ -130,7 +111,7 @@ def train(
         print(f"--- Epoch {epoch + 1}/{epochs} | Train Loss: {avg_train_loss:.4f} ---")
 
         # Run validation
-        val_loss, val_acc = validate(model, val_loader, criterion, device, is_dist, window_size=window_size, stride=stride)
+        val_loss, val_acc = validate(model, val_loader, criterion, device, is_dist, window_size=window_size, stride=stride, threshold=0.3)
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             torch.save({
@@ -147,8 +128,7 @@ def train(
         val_accs.append(val_acc)
     return train_losses, val_losses, val_accs
 
-
-def validate(model, val_loader, criterion, device, is_dist, window_size=10, stride=5):
+def validate(model, val_loader, criterion, device, is_dist, window_size=10, stride=5, threshold=0.3):
     model.eval()
     running_loss=0.0
     correct = 0
@@ -176,7 +156,8 @@ def validate(model, val_loader, criterion, device, is_dist, window_size=10, stri
             loss = criterion(batch_video_logits, labels)
             running_loss += loss.item()
 
-            preds = torch.argmax(batch_video_logits, dim=-1)
+            probs = torch.softmax(batch_video_logits, dim=1)[:, 1]
+            preds = (probs > threshold).long()
             correct += (preds == labels).sum().item()
             total += labels.size(0)
 
@@ -222,6 +203,7 @@ def parse_args():
     parser.add_argument('--checkpoint-dir', type=str, default='./checkpoint')
     parser.add_argument('--model-dir', type=str, default='./model')
     parser.add_argument('--data-dir', type=str, default='./data')
+    parser.add_argument('--threshold', type=float, default=0.3)
     return parser.parse_args()
 
 
@@ -241,6 +223,7 @@ if __name__ == '__main__':
 
     bucket = 'agression-model'
     file_name = 'data/videos'
+    # Requires aws local credentials
     download_data(bucket, file_name, f"{args.data_dir}/videos", args.data_dir)
 
     train_loader, train_sampler = get_dataloader(train_data_path, is_dist, batch_size=args.batch_size)
@@ -252,11 +235,6 @@ if __name__ == '__main__':
         t = torch.load(path, weights_only=True)
         frame_counts.append(t.shape[1])
 
-    # print(f"Min frames: {min(frame_counts)}")
-    # print(f"Max frames: {max(frame_counts)}")
-    # print(f"Mean frames: {sum(frame_counts) / len(frame_counts):.1f}")
-    # print(f"Videos shorter than 10: {sum(1 for f in frame_counts if f < 10)}")
-    # print(f"Videos shorter than 32: {sum(1 for f in frame_counts if f < 32)}")
     n_nonviolent = sum(1 for l in labels if l == 0)
     n_violent = sum(1 for l in labels if l == 1)
     total = n_nonviolent + n_violent
@@ -280,7 +258,10 @@ if __name__ == '__main__':
     )
 
     # Train model
-    train_losses, val_losses, val_accs = train(args.epochs, model, train_loader, valid_loader, train_sampler, optimizer, scheduler, criterion, device, is_dist, checkpoint_dir=args.checkpoint_dir)
+    train_losses, val_losses, val_accs = train(
+        args.epochs, model, train_loader, valid_loader,
+        train_sampler, optimizer, scheduler, criterion, device,
+        is_dist, checkpoint_dir=args.checkpoint_dir, threshold=args.threshold)
 
     # Load best checkpoint
     best_ckpt = os.path.join(args.checkpoint_dir, 'best_model.pt')
@@ -290,7 +271,7 @@ if __name__ == '__main__':
         print(f"Loaded best model from epoch {ckpt['epoch']}")
 
     # Run evaluation
-    all_preds, all_labels, all_probs, _ = evaluate(model, test_loader, criterion, device, is_dist)
+    all_preds, all_labels, all_probs, _ = evaluate(model, test_loader, criterion, device, is_dist, threshold=args.threshold)
 
     # Generate report from evaluation
     generate_report(

@@ -5,3 +5,8 @@ __pycache__
 src/model
 src/checkpoint
 src/data
+*.mp4
+*.pt
+*.mpeg
+src/video.py
+detections/
